@@ -1,15 +1,30 @@
 #!/usr/bin/env node
-// salacia-guard — zero-token scope enforcement via hooks
-// PreToolUse: check if target file is allowed → block/allow
-// PostToolUse: track drift score → warn if threshold exceeded
+// salacia-guard — zero-token scope enforcement via Claude Code hooks
+// Input: JSON from stdin (Claude Code hook protocol)
+//   { session_id, cwd, tool_name, tool_input, tool_result, ... }
+// Output: JSON to stdout (hook response protocol)
+//   PreToolUse:  { hookSpecificOutput: { permissionDecision: "allow|deny" }, systemMessage }
+//   PostToolUse: { systemMessage } (exit 0 = shown in transcript)
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { resolve, dirname } from "path";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { resolve } from "path";
 
-const SALACIA_DIR = ".salacia";
-const CONTRACT_FILE = resolve(SALACIA_DIR, "contract.json");
-const DRIFT_FILE = resolve(SALACIA_DIR, "drift.json");
-const CONFIG_FILE = resolve(SALACIA_DIR, "config.json");
+// ── Read stdin (Claude Code hook input) ──
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+
+// ── Paths ──
+
+function salaciaDir(cwd) { return resolve(cwd, ".salacia"); }
+function contractPath(cwd) { return resolve(salaciaDir(cwd), "contract.json"); }
+function driftPath(cwd) { return resolve(salaciaDir(cwd), "drift.json"); }
+function configPath(cwd) { return resolve(salaciaDir(cwd), "config.json"); }
 
 // ── Glob matching (ported from FSC salacia/drift.ts) ──
 
@@ -19,17 +34,12 @@ function matchGlob(filePath, pattern) {
     const prefix = pattern.slice(0, -3);
     return filePath.startsWith(prefix + "/") || filePath === prefix;
   }
-  if (pattern.startsWith("*.")) {
-    return filePath.endsWith(pattern.slice(1));
-  }
+  if (pattern.startsWith("*.")) return filePath.endsWith(pattern.slice(1));
   if (pattern.includes(".*")) {
     const base = pattern.replace(".*", "");
     return filePath === base || filePath.startsWith(base + ".");
   }
-  if (pattern.endsWith("/")) {
-    return filePath.startsWith(pattern);
-  }
-  // Mid-pattern wildcard: prefix*.ext
+  if (pattern.endsWith("/")) return filePath.startsWith(pattern);
   if (pattern.includes("*") && !pattern.includes("**")) {
     const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
     return new RegExp(`^${escaped}$`).test(filePath);
@@ -41,110 +51,94 @@ function matchesAny(filePath, patterns) {
   return (patterns || []).some(p => matchGlob(filePath, p));
 }
 
-// ── Load contract & config ──
+// ── Helpers ──
 
-function loadJSON(path, fallback) {
-  try { return JSON.parse(readFileSync(path, "utf-8")); }
-  catch { return fallback; }
+function loadJSON(p, fallback) {
+  try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return fallback; }
 }
 
-function loadContract() {
-  return loadJSON(CONTRACT_FILE, null);
+function saveDrift(cwd, drift) {
+  mkdirSync(salaciaDir(cwd), { recursive: true });
+  writeFileSync(driftPath(cwd), JSON.stringify(drift, null, 2));
 }
-
-function loadConfig() {
-  return loadJSON(CONFIG_FILE, { driftThreshold: 30, enabled: true });
-}
-
-function loadDrift() {
-  return loadJSON(DRIFT_FILE, { score: 0, files: [], softFiles: [], outOfScope: [], protected: [] });
-}
-
-function saveDrift(drift) {
-  mkdirSync(SALACIA_DIR, { recursive: true });
-  writeFileSync(DRIFT_FILE, JSON.stringify(drift, null, 2));
-}
-
-// ── Extract file path from tool input ──
 
 function extractFilePath(toolInput) {
-  try {
-    const input = typeof toolInput === "string" ? JSON.parse(toolInput) : toolInput;
-    return input.file_path || input.filePath || input.path || null;
-  } catch {
-    return null;
-  }
+  if (!toolInput) return null;
+  return toolInput.file_path || toolInput.filePath || toolInput.path || null;
 }
 
-function relativize(absPath) {
-  const cwd = process.cwd().replace(/\\/g, "/");
-  const normalized = absPath.replace(/\\/g, "/");
-  if (normalized.startsWith(cwd + "/")) {
-    return normalized.slice(cwd.length + 1);
+function relativize(absPath, cwd) {
+  const cwdNorm = cwd.replace(/\\/g, "/").replace(/\/$/, "");
+  const pathNorm = absPath.replace(/\\/g, "/");
+  // Case-insensitive prefix match for Windows drive letters
+  if (pathNorm.toLowerCase().startsWith(cwdNorm.toLowerCase() + "/")) {
+    return pathNorm.slice(cwdNorm.length + 1);
   }
-  return normalized;
+  return pathNorm;
 }
 
-// ── PreToolUse: check scope ──
+// ── Output (Claude Code hook response format) ──
 
-function preCheck() {
-  const config = loadConfig();
-  if (!config.enabled) { process.exit(0); }
+function allow() { process.exit(0); }
 
-  const contract = loadContract();
-  if (!contract) { process.exit(0); } // no contract = no enforcement
-
-  const toolInput = process.env.TOOL_INPUT || "{}";
-  const filePath = extractFilePath(toolInput);
-  if (!filePath) { process.exit(0); }
-
-  const rel = relativize(filePath);
-
-  // Protected → hard block
-  if (matchesAny(rel, contract.protectedPaths)) {
-    console.log(JSON.stringify({
-      decision: "block",
-      reason: `🛡️ Salacia: BLOCKED — "${rel}" is a protected path. Do not modify this file.`
-    }));
-    process.exit(0);
-  }
-
-  // Excluded → hard block
-  if (matchesAny(rel, contract.excludedPaths)) {
-    console.log(JSON.stringify({
-      decision: "block",
-      reason: `🚫 Salacia: BLOCKED — "${rel}" is excluded from scope.`
-    }));
-    process.exit(0);
-  }
-
-  // Allowed or soft-allowed → allow silently
-  // Out of scope → allow but will be tracked in post
+function deny(reason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { permissionDecision: "deny" },
+    systemMessage: reason
+  }));
   process.exit(0);
 }
 
-// ── PostToolUse: track drift ──
+function warn(message) {
+  process.stdout.write(JSON.stringify({ systemMessage: message }));
+  process.exit(0);
+}
 
-function postTrack() {
-  const config = loadConfig();
-  if (!config.enabled) { process.exit(0); }
+// ── PreToolUse ──
 
-  const contract = loadContract();
-  if (!contract) { process.exit(0); }
+function preCheck(input) {
+  const cwd = input.cwd || process.cwd();
+  const config = loadJSON(configPath(cwd), { enabled: true });
+  if (!config.enabled) return allow();
 
-  const toolInput = process.env.TOOL_INPUT || "{}";
-  const filePath = extractFilePath(toolInput);
-  if (!filePath) { process.exit(0); }
+  const contract = loadJSON(contractPath(cwd), null);
+  if (!contract) return allow();
 
-  const rel = relativize(filePath);
-  const drift = loadDrift();
+  const filePath = extractFilePath(input.tool_input);
+  if (!filePath) return allow();
 
-  // Skip if already tracked
-  if (drift.files.includes(rel) || drift.softFiles.includes(rel) || drift.outOfScope.includes(rel)) {
-    process.exit(0);
+  const rel = relativize(filePath, cwd);
+
+  if (matchesAny(rel, contract.protectedPaths)) {
+    return deny(`🛡️ Salacia: BLOCKED — "${rel}" is a protected path. Do not modify this file.`);
   }
+  if (matchesAny(rel, contract.excludedPaths)) {
+    return deny(`🚫 Salacia: BLOCKED — "${rel}" is excluded from scope.`);
+  }
+  return allow();
+}
 
-  // Classify
+// ── PostToolUse ──
+
+function postTrack(input) {
+  const cwd = input.cwd || process.cwd();
+  const config = loadJSON(configPath(cwd), { enabled: true, driftThreshold: 30 });
+  if (!config.enabled) return allow();
+
+  const contract = loadJSON(contractPath(cwd), null);
+  if (!contract) return allow();
+
+  const filePath = extractFilePath(input.tool_input);
+  if (!filePath) return allow();
+
+  const rel = relativize(filePath, cwd);
+  const drift = loadJSON(driftPath(cwd), {
+    score: 0, files: [], softFiles: [], outOfScope: [], protected: []
+  });
+
+  const allTracked = [...drift.files, ...drift.softFiles, ...drift.outOfScope];
+  if (allTracked.includes(rel)) return allow();
+
   if (matchesAny(rel, contract.allowedPaths)) {
     drift.files.push(rel);
   } else if (matchesAny(rel, contract.softAllowedPaths || [])) {
@@ -154,32 +148,23 @@ function postTrack() {
     drift.score += 5;
   }
 
-  // Check excess files
   const totalFiles = drift.files.length + drift.softFiles.length + drift.outOfScope.length;
-  if (totalFiles > (contract.maxFilesChanged || 20)) {
-    drift.score += 2;
-  }
+  if (totalFiles > (contract.maxFilesChanged || 20)) drift.score += 2;
 
-  saveDrift(drift);
+  saveDrift(cwd, drift);
 
-  // Warn if threshold exceeded
   const threshold = config.driftThreshold || 30;
   if (drift.score >= threshold) {
-    console.log(JSON.stringify({
-      decision: "warn",
-      reason: `⚠️ Salacia: drift score ${drift.score}/${threshold} — out-of-scope files: ${drift.outOfScope.join(", ")}. Consider staying within contract scope.`
-    }));
+    return warn(`⚠️ Salacia: drift score ${drift.score}/${threshold} — out-of-scope: ${drift.outOfScope.join(", ")}`);
   }
-
-  process.exit(0);
+  return allow();
 }
 
 // ── Main ──
 
 const mode = process.argv[2];
-if (mode === "pre") preCheck();
-else if (mode === "post") postTrack();
-else {
-  console.error("Usage: guard.mjs <pre|post>");
-  process.exit(1);
-}
+const input = await readStdin();
+
+if (mode === "pre") preCheck(input);
+else if (mode === "post") postTrack(input);
+else { console.error("Usage: guard.mjs <pre|post>"); process.exit(1); }
