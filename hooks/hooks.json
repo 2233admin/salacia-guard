@@ -1,10 +1,15 @@
 {
-  "description": "Salacia scope enforcement — zero-token interception of file edits",
+  "description": "Salacia scope enforcement + GC — zero-token interception of file edits",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "*",
         "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/gc.mjs\" auto",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs\" session",

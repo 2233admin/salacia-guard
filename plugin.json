@@ -1,5 +1,5 @@
 {
   "name": "salacia-guard",
-  "description": "Zero-token scope enforcement for AI coding agents. Intercepts file edits in real-time, blocking out-of-scope changes without consuming LLM tokens.",
-  "version": "0.4.0"
+  "description": "Zero-token scope enforcement for AI coding agents. Three-layer harness: Context Engineering (contract), Architectural Constraints (hooks), Garbage Collection (auto-cleanup + memory).",
+  "version": "1.0.0"
 }

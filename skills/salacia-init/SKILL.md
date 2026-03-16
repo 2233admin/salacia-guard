@@ -15,7 +15,9 @@ Generate a scope contract for the current task.
    - Keywords → map to file paths (use project structure)
    - Quoted file paths in the description
    - Conventional commit prefix (feat/fix/docs/chore) → scope width
-3. Generate `.salacia/contract.json`:
+3. **Check `.salacia/memory.json` for historical patterns.** If it exists, read the pattern matching the detected task type (feat/fix/etc.). Pre-fill `softAllowedPaths` with entries where `weight >= 0.5`. This lets the contract benefit from past session learning.
+
+4. Generate `.salacia/contract.json`:
 
 ```json
 {
@@ -30,7 +32,7 @@ Generate a scope contract for the current task.
 }
 ```
 
-4. Also create `.salacia/config.json` if it doesn't exist:
+5. Also create `.salacia/config.json` if it doesn't exist:
 
 ```json
 {
@@ -39,7 +41,7 @@ Generate a scope contract for the current task.
 }
 ```
 
-5. Reset `.salacia/drift.json` to zero state:
+6. Reset `.salacia/drift.json` to zero state:
 
 ```json
 {
@@ -51,7 +53,7 @@ Generate a scope contract for the current task.
 }
 ```
 
-6. Report the contract summary to the user
+7. Report the contract summary to the user (include any memory-derived soft paths)
 
 ## Scope width heuristics
 

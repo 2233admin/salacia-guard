@@ -87,6 +87,29 @@ We only implement layer 4 (contract) and part of layer 5 (verify). Why?
 
 We'll add fault localization as an optional skill (`/salacia-locate`) for users who want it. But the core value is enforcement, not suggestion.
 
+### Layer 3: Garbage Collection (v1.0)
+
+The GC layer keeps the harness environment clean and evolving. Five modes:
+
+| Mode | Trigger | What it does |
+|------|---------|-------------|
+| `auto` | SessionStart hook | Quick check: audit size + contract staleness |
+| `rotate` | auto or manual | Retains 7 days of audit, aggregates older events to `audit-summary.json` |
+| `refine` | `/salacia-gc` | Analyzes drift patterns → suggests overScoped/underScoped/shouldPromote |
+| `learn` | `/salacia-gc` | Merges session patterns into `memory.json` with exponential decay (0.9x) |
+| `stale` | auto | Checks contract vs current branch and file existence |
+
+**memory.json** stores learned patterns per task type. When you run `/salacia-init`, it pre-fills `softAllowedPaths` from memory (entries with weight ≥ 0.5). Old patterns decay naturally — no manual cleanup needed.
+
+```
+SessionStart → gc auto → {rotate if audit > 1MB, stale check} → guard session check
+                                    ↓
+                            /salacia-gc (manual)
+                            → refine (suggestions)
+                            → rotate (cleanup)
+                            → learn (memory merge)
+```
+
 ### Why a plugin, not a skill?
 
 Skills inject text into the model context. They can't intercept tool calls. A skill can say "please don't edit .env" — and the model might listen. A hook says "no" and the edit doesn't happen.
@@ -246,6 +269,11 @@ claude plugin add https://github.com/kenryu42/claude-code-safety-net
 - [ ] Monorepo support — Auto-detect package boundaries from `package.json` `[Planned]`
 - [ ] Retry loop — On drift threshold exceeded, stash + retry with feedback `[Planned]`
 - [ ] Gemini CLI + Copilot CLI support `[Planned]`
+- [x] **GC Layer (L3)** — Auto-rotate audit, refine contract, learn patterns into memory.json
+- [x] **`/salacia-gc` skill** — Manual GC: refine + rotate + learn
+- [x] **memory.json** — Cross-session pattern learning with exponential decay
+- [x] **Shared lib.mjs** — Atomic writes, Windows path normalization, `.env.*` glob fix
+- [x] **Promotion upgrade** — `count >= 3 AND sessions >= 2` (was count-only)
 - [x] SessionStart hook — Stale contract detection + .gitignore reminder
 - [x] Audit logging — `.salacia/audit.jsonl` append-only event log
 - [x] Self-learning — Auto-promote frequently overridden files to soft scope
