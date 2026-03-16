@@ -6,7 +6,7 @@
 //   PreToolUse:  { hookSpecificOutput: { permissionDecision: "allow|deny" }, systemMessage }
 //   PostToolUse: { systemMessage } (exit 0 = shown in transcript)
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from "fs";
 import { resolve } from "path";
 
 // ── Read stdin (Claude Code hook input) ──
@@ -25,6 +25,8 @@ function salaciaDir(cwd) { return resolve(cwd, ".salacia"); }
 function contractPath(cwd) { return resolve(salaciaDir(cwd), "contract.json"); }
 function driftPath(cwd) { return resolve(salaciaDir(cwd), "drift.json"); }
 function configPath(cwd) { return resolve(salaciaDir(cwd), "config.json"); }
+function auditPath(cwd) { return resolve(salaciaDir(cwd), "audit.jsonl"); }
+function learnedPath(cwd) { return resolve(salaciaDir(cwd), "learned.json"); }
 
 // ── Glob matching (ported from FSC salacia/drift.ts) ──
 
@@ -60,6 +62,34 @@ function loadJSON(p, fallback) {
 function saveDrift(cwd, drift) {
   mkdirSync(salaciaDir(cwd), { recursive: true });
   writeFileSync(driftPath(cwd), JSON.stringify(drift, null, 2));
+}
+
+// ── Audit log (append-only JSONL) ──
+
+function auditLog(cwd, action, file, score, reason) {
+  mkdirSync(salaciaDir(cwd), { recursive: true });
+  const entry = JSON.stringify({ ts: new Date().toISOString(), action, file, score, reason });
+  appendFileSync(auditPath(cwd), entry + "\n");
+}
+
+// ── Learned.json — self-learning from overrides ──
+
+function trackLearning(cwd, filePath) {
+  const lp = learnedPath(cwd);
+  const learned = loadJSON(lp, { overrides: {}, autoSoftAllow: [] });
+  const entry = learned.overrides[filePath] || { count: 0 };
+  entry.count++;
+  entry.lastSeen = new Date().toISOString().slice(0, 10);
+  learned.overrides[filePath] = entry;
+  if (entry.count >= 3 && !learned.autoSoftAllow.includes(filePath)) {
+    learned.autoSoftAllow.push(filePath);
+    mkdirSync(salaciaDir(cwd), { recursive: true });
+    writeFileSync(lp, JSON.stringify(learned, null, 2));
+    return true; // newly promoted
+  }
+  mkdirSync(salaciaDir(cwd), { recursive: true });
+  writeFileSync(lp, JSON.stringify(learned, null, 2));
+  return false;
 }
 
 function extractFilePath(toolInput) {
@@ -113,9 +143,11 @@ function preCheck(input) {
   const rel = relativize(filePath, cwd);
 
   if (matchesAny(rel, contract.protectedPaths)) {
+    auditLog(cwd, "deny", rel, 0, "protected path");
     return deny(`🛡️ Salacia: BLOCKED — "${rel}" is a protected path. Do not modify this file.`);
   }
   if (matchesAny(rel, contract.excludedPaths)) {
+    auditLog(cwd, "deny", rel, 0, "excluded path");
     return deny(`🚫 Salacia: BLOCKED — "${rel}" is excluded from scope.`);
   }
   return allow();
@@ -142,13 +174,21 @@ function postTrack(input) {
   const allTracked = [...drift.files, ...drift.softFiles, ...drift.outOfScope];
   if (allTracked.includes(rel)) return allow();
 
+  // Merge learned autoSoftAllow into soft scope
+  const learned = loadJSON(learnedPath(cwd), { overrides: {}, autoSoftAllow: [] });
+  const softPaths = [...(contract.softAllowedPaths || []), ...learned.autoSoftAllow];
+
   if (matchesAny(rel, contract.allowedPaths)) {
     drift.files.push(rel);
-  } else if (matchesAny(rel, contract.softAllowedPaths || [])) {
+    auditLog(cwd, "allow", rel, drift.score);
+  } else if (matchesAny(rel, softPaths)) {
     drift.softFiles.push(rel);
+    auditLog(cwd, "soft", rel, drift.score);
   } else {
     drift.outOfScope.push(rel);
     drift.score += 5;
+    trackLearning(cwd, rel);
+    auditLog(cwd, "drift", rel, drift.score, "out of scope");
   }
 
   const totalFiles = drift.files.length + drift.softFiles.length + drift.outOfScope.length;
