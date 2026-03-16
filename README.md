@@ -229,13 +229,28 @@ salacia-guard works standalone, but integrates with orchestration systems:
 - **FSC** (Full Self Coding): The engine has a deeper Salacia module with co-change coupling, A/B experiments, and post-merge testing. The plugin is the lightweight portable version.
 - **OMC** (Oh My ClaudeCode): When OMC's executor agents run, salacia-guard protects them automatically. No configuration needed — the hooks fire on every Edit/Write.
 
+## Complementary Plugins
+
+Integrate `salacia-guard` with [`claude-code-safety-net`](https://github.com/kenryu42/claude-code-safety-net) for defense-in-depth. While salacia-guard enforces **spatial integrity** (which files can be edited), safety-net provides a **procedural firewall** against destructive shell commands (`rm -rf`, `git reset --hard`, `git push --force`). They intercept different tools (Edit/Write vs Bash), so both can run simultaneously with zero conflict.
+
+```bash
+# Install both for full coverage
+claude plugin add https://github.com/2233admin/salacia-guard
+claude plugin add https://github.com/kenryu42/claude-code-safety-net
+```
+
 ## Roadmap
 
-- [ ] `/salacia-locate` — Fault localization skill (ripgrep + PageRank file ranking)
-- [ ] OMC integration — Auto-read scope from `OMC_TASK_ID` environment variable
-- [ ] Monorepo support — Auto-detect package boundaries from `package.json`
-- [ ] Retry loop — On drift threshold exceeded, stash + retry with feedback
-- [ ] `salacia.config.ts` — TypeScript config for complex rules
+- [ ] `/salacia-locate` — Fault localization skill (ripgrep + PageRank file ranking) `[Planned]`
+- [ ] OMC integration — Auto-read scope from `OMC_TASK_ID` environment variable `[Planned]`
+- [ ] Monorepo support — Auto-detect package boundaries from `package.json` `[Planned]`
+- [ ] Retry loop — On drift threshold exceeded, stash + retry with feedback `[Planned]`
+- [ ] Gemini CLI + Copilot CLI support `[Planned]`
+- [x] SessionStart hook — Stale contract detection + .gitignore reminder
+- [x] Audit logging — `.salacia/audit.jsonl` append-only event log
+- [x] Self-learning — Auto-promote frequently overridden files to soft scope
+- [x] `permissionDecision: "ask"` for out-of-scope (not hard deny)
+- [x] `/salacia-stats` — Audit statistics dashboard
 
 ## License
 
@@ -244,7 +259,9 @@ MIT
 ## Acknowledgments
 
 - [StartripAI/Salacia](https://github.com/StartripAI/Salacia) — Contract concept and drift scoring
+- [claude-code-safety-net](https://github.com/kenryu42/claude-code-safety-net) — Hook protocol reference and complementary plugin
 - [commit-prophet](https://github.com/LakshmiSravyaVedantham/commit-prophet) — Co-change coupling algorithm
 - [Axon](https://github.com/harshkedia177/axon) — Coupling threshold validation
 - [AgentFL](https://arxiv.org/abs/2403.16362) — Fault localization for agents
 - [ContextCov](https://arxiv.org/abs/2603.00822) — Constraint derivation from instructions
+- [LlamaFirewall](https://arxiv.org/abs/2505.03574) — Defense-in-depth guardrail architecture inspiration

@@ -6,8 +6,9 @@
 //   PreToolUse:  { hookSpecificOutput: { permissionDecision: "allow|deny" }, systemMessage }
 //   PostToolUse: { systemMessage } (exit 0 = shown in transcript)
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve } from "path";
+import { execFileSync } from "child_process";
 
 // ── Read stdin (Claude Code hook input) ──
 
@@ -122,9 +123,57 @@ function deny(reason) {
   process.exit(0);
 }
 
+function ask(reason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: reason
+    }
+  }));
+  process.exit(0);
+}
+
 function warn(message) {
   process.stdout.write(JSON.stringify({ systemMessage: message }));
   process.exit(0);
+}
+
+function info(message) {
+  process.stdout.write(JSON.stringify({ systemMessage: message }));
+  process.exit(0);
+}
+
+// ── SessionStart ──
+
+function sessionCheck(input) {
+  const cwd = input.cwd || process.cwd();
+  const messages = [];
+
+  const contract = loadJSON(contractPath(cwd), null);
+  if (contract) {
+    const hours = (Date.now() - (contract.generatedAt || 0)) / 3600000;
+    if (hours > 24) {
+      messages.push(`⏰ Contract is ${Math.floor(hours)}h old. Consider /salacia-init to refresh.`);
+    }
+    try {
+      const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }).toString().trim();
+      if (contract.taskId && !contract.taskId.includes(branch) && branch !== "main" && branch !== "master") {
+        messages.push(`🔀 Branch "${branch}" doesn't match contract "${contract.taskId}". Run /salacia-init?`);
+      }
+    } catch {}
+  }
+
+  if (existsSync(resolve(cwd, ".salacia")) && existsSync(resolve(cwd, ".gitignore"))) {
+    try {
+      if (!readFileSync(resolve(cwd, ".gitignore"), "utf-8").includes(".salacia")) {
+        messages.push(`📝 Add ".salacia/" to .gitignore.`);
+      }
+    } catch {}
+  }
+
+  if (messages.length > 0) return info("🛡️ Salacia Guard active.\n" + messages.join("\n"));
+  return allow();
 }
 
 // ── PreToolUse ──
@@ -149,6 +198,13 @@ function preCheck(input) {
   if (matchesAny(rel, contract.excludedPaths)) {
     auditLog(cwd, "deny", rel, 0, "excluded path");
     return deny(`🚫 Salacia: BLOCKED — "${rel}" is excluded from scope.`);
+  }
+  // Out of scope (not allowed, not soft) → ask user
+  const learned = loadJSON(learnedPath(cwd), { overrides: {}, autoSoftAllow: [] });
+  const softPaths = [...(contract.softAllowedPaths || []), ...learned.autoSoftAllow];
+  if (contract.allowedPaths.length > 0 && !matchesAny(rel, contract.allowedPaths) && !matchesAny(rel, softPaths)) {
+    auditLog(cwd, "ask", rel, 0, "out of scope");
+    return ask(`⚠️ Salacia: "${rel}" is outside scope. Allow this edit?`);
   }
   return allow();
 }
@@ -203,6 +259,40 @@ function postTrack(input) {
   return allow();
 }
 
+// ── Stats ──
+
+function generateStats(cwd) {
+  const lines = [];
+  try {
+    const raw = readFileSync(auditPath(cwd), "utf-8").trim().split("\n").filter(Boolean);
+    const events = raw.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const counts = { allow: 0, deny: 0, drift: 0, soft: 0, ask: 0 };
+    const fileFreq = {};
+    for (const e of events) {
+      counts[e.action] = (counts[e.action] || 0) + 1;
+      if (e.action === "drift") fileFreq[e.file] = (fileFreq[e.file] || 0) + 1;
+    }
+    const topDrift = Object.entries(fileFreq).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const learned = loadJSON(learnedPath(cwd), { overrides: {}, autoSoftAllow: [] });
+
+    lines.push("┌─── Salacia Stats ─────────────────────────┐");
+    lines.push(`│ Total events: ${events.length}`);
+    lines.push(`│ Allow: ${counts.allow}  Soft: ${counts.soft}  Drift: ${counts.drift}  Deny: ${counts.deny}  Ask: ${counts.ask}`);
+    if (topDrift.length > 0) {
+      lines.push("├─── Top drifted files ──────────────────────┤");
+      for (const [f, c] of topDrift) lines.push(`│ ${c}x ${f}`);
+    }
+    if (learned.autoSoftAllow.length > 0) {
+      lines.push("├─── Learned (auto-promoted to soft) ────────┤");
+      for (const f of learned.autoSoftAllow) lines.push(`│ ✅ ${f}`);
+    }
+    lines.push("└────────────────────────────────────────────┘");
+  } catch {
+    lines.push("No audit data found. Use /salacia-init to start.");
+  }
+  return lines.join("\n");
+}
+
 // ── Main ──
 
 const mode = process.argv[2];
@@ -210,4 +300,6 @@ const input = await readStdin();
 
 if (mode === "pre") preCheck(input);
 else if (mode === "post") postTrack(input);
-else { console.error("Usage: guard.mjs <pre|post>"); process.exit(1); }
+else if (mode === "session") sessionCheck(input);
+else if (mode === "stats") { console.log(generateStats(input.cwd || process.cwd())); process.exit(0); }
+else { console.error("Usage: guard.mjs <pre|post|session|stats>"); process.exit(1); }
