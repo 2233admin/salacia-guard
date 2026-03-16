@@ -83,8 +83,11 @@ function allow() { process.exit(0); }
 
 function deny(reason) {
   process.stdout.write(JSON.stringify({
-    hookSpecificOutput: { permissionDecision: "deny" },
-    systemMessage: reason
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason
+    }
   }));
   process.exit(0);
 }
