@@ -1,0 +1,11 @@
+# Runtime state (generated per-project, not committed)
+.salacia/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+.omc/

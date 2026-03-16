@@ -1,0 +1,28 @@
+{
+  "name": "salacia-guard",
+  "description": "Zero-token scope enforcement for AI coding agents. Generates contracts from task descriptions, intercepts Edit/Write to block out-of-scope changes.",
+  "author": {
+    "name": "FSC",
+    "url": "https://github.com/2233admin"
+  },
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs\" pre"
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs\" post"
+    }
+  ],
+  "skills": [
+    "./skills/salacia-init",
+    "./skills/salacia-status"
+  ]
+}
