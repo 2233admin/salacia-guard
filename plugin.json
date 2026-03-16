@@ -1,0 +1,5 @@
+{
+  "name": "salacia-guard",
+  "description": "Zero-token scope enforcement for AI coding agents. Intercepts file edits in real-time, blocking out-of-scope changes without consuming LLM tokens.",
+  "version": "0.4.0"
+}
